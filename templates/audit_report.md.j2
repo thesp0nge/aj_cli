@@ -1,0 +1,57 @@
+# 🛡️ Audit Report: {{ project_name }}
+
+**Bugzilla ID (Audit Tracker):** [{{ bugzilla_id_display }}]({{ bugzilla_base_url }}{{ bugzilla_id_number }})
+**Audit Start Date:** {{ start_date }}
+**Generated On:** {{ generated_date }}
+
+---
+
+## 📈 Executive Summary
+
+The audit for **{{ project_name }}** identified **{{ finding_count }}** vulnerabilities.
+
+The overall risk profile, calculated using the average CVSS v4 Base Score of **{{ avg_score_display }}**, results in a recommended priority of:
+**Triage Level:** {{ triage_level }} 
+
+| Metric | Value |
+|:---|:---|
+| Total Findings | {{ finding_count }} |
+| Average CVSS v4 Score | {{ avg_score_display }} |
+| Recommended Triage Level | {{ triage_level }} |
+
+---
+
+## 📋 Detailed Findings List
+
+This section provides a summary table of all vulnerabilities found, ordered by severity (Critical to Low).
+
+| ID | Bugzilla ID | Title | Severity | CVSS v4 Score | Status |
+|:---|:---|:---|:---|:---|:---|
+{% for f in findings %}
+| {{ f.id }} | [{{ f.finding_bugzilla_id }}]({{ bugzilla_base_url }}{{ f.finding_bugzilla_number }}) | {{ f.title }} | {{ f.severity }} | {{ f.cvss_v4_score|default("N/A", true) }} | OPEN |
+{% endfor %}
+
+---
+
+{% for f in findings %}
+## 💥 Finding {{ loop.index }}: {{ f.title }} ({{ f.severity }})
+
+**Finding ID:** {{ f.id }}
+**Bugzilla ID:** [{{ f.finding_bugzilla_id }}]({{ bugzilla_base_url }}{{ f.finding_bugzilla_number }})
+**CVSS v4 Score:** {{ f.cvss_v4_score|default("N/A", true) }}
+**CVSS Vector:** `{{ f.cvss_v4_vector|default("N/A", true) }}`
+
+### Description & Proof of Concept (PoC)
+
+{{ f.notes }}
+
+### Impact
+
+*Standard text for impact based on {{ f.severity }} level. For a {{ f.severity }} issue, the impact is generally: [Insert standardized impact text here].*
+
+### Recommendation
+
+*Standard remediation advice tailored to the finding. General recommendation for this type of issue: [Insert standardized remediation text here].*
+
+---
+{% endfor %}

@@ -1,0 +1,5 @@
+__pycache__/ 
+aj_cli.egg-info/
+*.db
+*.json
+.aj_history

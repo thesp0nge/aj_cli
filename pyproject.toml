@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aj-cli"
+version = "0.10.0"
+description = "The Audit Journal - A professional CLI for security auditors"
+dependencies = [
+  "cvss",
+  "jinja2",
+  "prompt_toolkit",
+  "python-bugzilla"
+]
+
+[project.scripts]
+aj = "aj:main"
+
+[tool.setuptools]
+# Specifichiamo quali cartelle sono pacchetti Python
+packages = ["core"]
+# Specifichiamo moduli Python singoli nella root
+py-modules = ["aj"]
+
+[tool.setuptools.package-data]
+# Include i template Jinja2 nell'installazione
+"*" = ["templates/*.j2"]
