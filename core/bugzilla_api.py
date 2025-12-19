@@ -43,4 +43,7 @@ class BugzillaClient:
                 for bug in bugs
             }
         except Exception:
+            print(
+                f"\n[!] Bugzilla API Error: {e}"
+            )  # Questo ti dirà se è un problema di Auth o di Rete
             return {}

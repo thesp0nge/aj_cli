@@ -252,7 +252,7 @@ class AuditCommandHandler:
 
         # Context: Active Audit - List Findings
         severity_filter = arg.upper() if arg else None
-        sql = "SELECT finding_bugzilla_id, title, severity, cvss_v4_score FROM findings WHERE audit_fk = ?"
+        sql = "SELECT id, finding_bugzilla_id, title, severity, cvss_v4_score FROM findings WHERE audit_fk = ?"
         params = [self.active_audit_id]
 
         if severity_filter:
@@ -269,10 +269,15 @@ class AuditCommandHandler:
             return
 
         print("Fetching status from Bugzilla...")
-        bz_ids = [r[0] for r in rows if r[0]]
+        bz_ids = [r[1] for r in rows if r[1]]
         bz_statuses = self.bz_client.get_multiple_status(bz_ids)
 
-        for bz, title, sev, score in rows:
+        print(
+            f"{'ID':<4} | {'Bugzilla ID':<12} | {'Status':<18} | {'Sev':<8} | {'Score'} | {'Title'}"
+        )
+        print("-" * 80)
+
+        for fid, bz, title, sev, score in rows:
             clean_id = bz.replace(FINDING_BUGZILLA_PREFIX, "")
             info = bz_statuses.get(clean_id, {})
 
@@ -284,7 +289,9 @@ class AuditCommandHandler:
             # Colore basato sullo stato (opzionale se usi prompt_toolkit)
             score_val = f"{score:>4.1f}" if score is not None else " N/A"
 
-            print(f"{bz:<12} | {bz_status_str:<18} | {sev:<8} ({score_val}) | {title}")
+            print(
+                f"{fid:<4} | {bz:<12} | {bz_status_str:<18} | {sev:<8} ({score_val}) | {title}"
+            )
 
     def do_edit(self, arg):
         """
@@ -393,22 +400,89 @@ class AuditCommandHandler:
             print(f"Error during update: {e}")
 
     def do_triage(self, _):
-        """Calculates audit metrics based on CVSS v4."""
+        """
+        triage
+        Shows a detailed summary of the audit, including live Bugzilla status
+        and statistics on open vs closed findings.
+        """
         if not self.active_audit_id:
             print("Error: No active audit.")
             return
 
+        # 1. Recupera tutti i findings dal database locale
         self.c.execute(
-            "SELECT AVG(cvss_v4_score) FROM findings WHERE audit_fk = ? AND cvss_v4_score > 0",
+            """
+            SELECT finding_bugzilla_id, severity, cvss_v4_score 
+            FROM findings WHERE audit_fk = ?
+        """,
             (self.active_audit_id,),
         )
-        avg = self.c.fetchone()[0] or 0.0
-        label = map_cvss_to_severity(avg)
+        rows = self.c.fetchall()
 
-        print("\n--- Audit Triage Summary ---")
-        print(f"Average CVSS v4 Score: {avg:.1f}")
-        print(f"Overall Severity:      {label}")
-        print("-" * 30)
+        if not rows:
+            print("No findings recorded for this audit yet.")
+            return
+
+        print(f"[*] Syncing {len(rows)} findings with Bugzilla...")
+
+        bz_ids = [r[0] for r in rows if r[0]]
+        bz_info = self.bz_client.get_multiple_status(bz_ids)
+
+        # 3. Inizializza i contatori
+        total_findings = len(rows)
+        open_findings = 0
+        closed_findings = 0
+        scores_open = []
+        severity_counts = {
+            "CRITICAL": 0,
+            "HIGH": 0,
+            "MEDIUM": 0,
+            "LOW": 0,
+            "UNKNOWN": 0,
+        }
+
+        for bz, sev, score in rows:
+            clean_id = bz.replace(FINDING_BUGZILLA_PREFIX, "")
+            info = bz_info.get(clean_id, {})
+
+            is_open = info.get("is_open", True)  # Default a True se non trovato
+
+            if is_open:
+                open_findings += 1
+                if score and score > 0:
+                    scores_open.append(score)
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+            else:
+                closed_findings += 1
+
+        # 4. Calcoli statistici
+        avg_cvss_open = sum(scores_open) / len(scores_open) if scores_open else 0.0
+        completion_rate = (
+            (closed_findings / total_findings) * 100 if total_findings > 0 else 0
+        )
+
+        # 5. Visualizzazione Report Triage
+        print(f"\n{'='*45}")
+        print(f" LIVE TRIAGE: {self.active_bugzilla_id}")
+        print(f"{'='*45}")
+        print(f" Status Summary:   {open_findings} OPEN / {closed_findings} CLOSED")
+        print(f" Completion Rate:  {completion_rate:.1f}%")
+        print(
+            f" Avg CVSS (Open):  {avg_cvss_open:.1f} ({map_cvss_to_severity(avg_cvss_open)})"
+        )
+        print(f"{'-'*45}")
+        print(f" Severity Distribution (Open Only):")
+        for s, count in severity_counts.items():
+            if count > 0:
+                print(f"  - {s:<10}: {count}")
+
+        # 6. Alert critico
+        if severity_counts["CRITICAL"] > 0:
+            print(
+                f"\n [!] ATTENTION: {severity_counts['CRITICAL']} CRITICAL findings are still OPEN."
+            )
+
+        print(f"{'='*45}\n")
 
     def do_report(self, arg):
         """Generates the Markdown report."""
@@ -547,6 +621,112 @@ class AuditCommandHandler:
 
         save_config(config)
         print("Configuration saved. Please restart the tool to apply changes.")
+
+    def do_show(self, arg):
+        """
+        show <finding_id>
+        Displays all details for a specific finding, including notes and live BZ info.
+        """
+        if not self.active_audit_id:
+            print("Error: Open an audit first.")
+            return
+
+        if not arg or not arg.isdigit():
+            print("Error: Please provide a numeric finding ID (e.g., show 1).")
+            return
+
+        finding_id = int(arg)
+
+        self.c.execute(
+            """
+            SELECT id, finding_bugzilla_id, title, severity, cvss_v4_vector, cvss_v4_score, notes, cwe_id 
+            FROM findings 
+            WHERE id = ? AND audit_fk = ?
+        """,
+            (finding_id, self.active_audit_id),
+        )
+
+        row = self.c.fetchone()
+        if not row:
+            print(f"Error: Finding ID {finding_id} not found in this audit.")
+            return
+
+        fid, bz, title, sev, vector, score, notes, cwe = row
+
+        # Fetch live status for this single bug
+        print(f"[*] Fetching live info for {bz}...")
+        bz_info = self.bz_client.get_bug_status(bz)
+
+        print(f"\n{'='*60}")
+        print(f" FINDING #{fid}: {title}")
+        print(f"{'='*60}")
+        print(
+            f" Bugzilla ID:  {bz:<20} Status: {bz_info.get('status', '???')} {bz_info.get('resolution', '')}"
+        )
+        print(f" Severity:     {sev:<20} Score:  {score if score else 'N/A'}")
+        print(f" CVSS Vector:  {vector if vector else 'N/A'}")
+        print(f" CWE ID:       {f'CWE-{cwe}' if cwe else 'N/A'}")
+        print(f"{'-'*60}")
+        print(f" NOTES / PoC:")
+        print(f"{notes if notes else 'No notes provided.'}")
+        print(f"{'='*60}\n")
+
+    def do_sync(self, _):
+        """
+        sync
+        Synchronizes local findings with Bugzilla.
+        Updates titles and provides a summary of changed statuses.
+        """
+        if not self.active_audit_id:
+            print("Error: Open an audit first.")
+            return
+
+        # 1. Recupera i bug IDs dal database
+        self.c.execute(
+            "SELECT id, finding_bugzilla_id, title FROM findings WHERE audit_fk = ?",
+            (self.active_audit_id,),
+        )
+        rows = self.c.fetchall()
+
+        if not rows:
+            print("No findings to sync.")
+            return
+
+        print(f"[*] Fetching updates for {len(rows)} findings from Bugzilla...")
+        bz_ids = [str(r[1]).replace("bsc#", "").strip() for r in rows if r[1]]
+
+        # Usiamo una funzione estesa del client (o getbugs direttamente)
+        # per ottenere anche i summary (titoli)
+        try:
+            bugs = self.bz_client.bz.getbugs(bz_ids)
+            updated_count = 0
+
+            print(f"\n{'ID':<4} | {'Bugzilla ID':<12} | {'Change Detected'}")
+            print("-" * 50)
+
+            for bug in bugs:
+                # Trova il corrispondente record locale
+                # Cerchiamo l'ID del database basandoci sul Bugzilla ID ritornato
+                matching_row = next((r for r in rows if str(bug.id) in str(r[1])), None)
+
+                if matching_row:
+                    local_id, local_bz, local_title = matching_row
+
+                    # Se il titolo su Bugzilla è cambiato, lo aggiorniamo localmente
+                    if bug.summary != local_title:
+                        print(f"{local_id:<4} | {local_bz:<12} | Title updated")
+                        self.c.execute(
+                            "UPDATE findings SET title = ? WHERE id = ?",
+                            (bug.summary, local_id),
+                        )
+                        updated_count += 1
+
+            self.conn.commit()
+            print("-" * 50)
+            print(f"[*] Sync complete. {updated_count} local records updated.")
+
+        except Exception as e:
+            print(f"Error during sync: {e}")
 
     def default(self, line):
         if line:
